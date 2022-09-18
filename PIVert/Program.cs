@@ -96,7 +96,7 @@ DECIVE_UNIT = 0
 
 
         static void PrintUsage() {
-            Console.WriteLine("Usage: PIVert.exe install | pfx_file pfx_password");
+            Console.WriteLine("Usage: PIVert-relay.exe install | <public certificate in hex> <slot>");
             return;
         }
 
@@ -133,12 +133,12 @@ DECIVE_UNIT = 0
             }
         }
 
-        static void RunEmulation(string pfxFile, string pfxPassword) {
+        static void RunEmulation(string certificate, string slot) {
 
             var cardSettings = (PipeReaderSettings)ReaderSettings.LocalPipe();
 
             pipeCom = new PipeCom(cardSettings);
-            pipeCom.Handler = new PIVCardHandler(pfxFile, pfxPassword);
+            pipeCom.Handler = new PIVCardHandler(certificate, slot);
             pipeCom.DriverConnect += PipeCom_DriverConnect;
             pipeCom.CardInsert += PipeCom_CardInsert;
             pipeCom.log += PipeCom_log;
@@ -169,6 +169,11 @@ DECIVE_UNIT = 0
 
         static void Main(string[] args) {
 
+            if (args.Length == 0)
+            {
+                PrintUsage();
+                return;
+            }
             if(args.Length == 1 && args[0] != "install" && args.Length != 2) {
                 PrintUsage();
                 return;

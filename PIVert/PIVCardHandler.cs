@@ -43,18 +43,19 @@ namespace PIVert {
         readonly Pkcs12Store store = new Pkcs12Store();
         readonly RsaPrivateCrtKeyParameters key;
         readonly byte[] certificateBytes;
+        readonly byte[] certSlotBytes;
 
         BinaryReader pendingResponse;
         MemoryStream pendingRequest;
 
-        public PIVCardHandler(string pfxPath, string pfxPassword) {
+        public static byte[] Sign1 = new byte[] { };
+        public static byte[] Sign2 = new byte[] { };
+        public PIVCardHandler(string certiciate, string slot) {
             cardCapabilityContainer.SetRandomCardId();
             cardHolderUID.SetRandomGuid();
 
-            store.Load(new MemoryStream(File.ReadAllBytes(pfxPath)),pfxPassword.ToArray());
-            var firstAlias = store.Aliases.Cast<string>().First();
-            certificateBytes = store.GetCertificate(firstAlias).Certificate.GetEncoded();
-            key = (RsaPrivateCrtKeyParameters)store.GetKey(firstAlias).Key;            
+            certificateBytes = ByteArray.readHexData(certiciate);
+            certSlotBytes = ByteArray.readHexData(slot);
         }
 
         public int GetInteger(ReadOnlySpan<byte> data) {
@@ -131,39 +132,35 @@ namespace PIVert {
 
                 }else if(apduObj.INS == 0x87) {
                    
-                    byte[] data;
+                    if (Sign1.Length == 0)
+                    {
+                        Sign1 = apduObj.GetBytes();
+                    }
+                    else
+                    {
+                        Sign2 = apduObj.GetBytes();
+                    }
 
                     if (chaining) {
-                        if(pendingRequest == null) {
-                            pendingRequest = new MemoryStream();
-                        }
-                        pendingRequest.Write(apduObj.Data, 0, apduObj.Data.Length);
                         return StatusOK;
                     } else {
 
-                        if(pendingRequest != null) {
-                            pendingRequest.Write(apduObj.Data, 0, apduObj.Data.Length);
-                            data = pendingRequest.ToArray();
-                        } else {
-                            data = apduObj.Data;
-                        }
+                        //update slot
+                        Sign1[3] = certSlotBytes[0];
+                        Sign2[3] = certSlotBytes[0];
 
-                        var tlvRequests = new TlvReader(data);
-                        var authRequest = tlvRequests.ReadNestedTlv(0x7c);
-                        authRequest.ReadValue(0x82);
-                        var signData = authRequest.ReadValue(0x81).ToArray();
-                        var signature = SignData(signData);
-                        var tlvResponse = new TlvWriter();
+                        Console.WriteLine("[*] Data to sign: {0} {1}", ByteArray.hexDump(Sign1), ByteArray.hexDump(Sign2));
+                        Sign1 = new byte[] { };
+                        Sign2 = new byte[] { };
 
-                        using (tlvResponse.WriteNestedTlv(0x7c)) {
-                            tlvResponse.WriteValue(0x82, signature);
-                        }
+                        Console.WriteLine("[*] Enter signed blob");
+                        byte[] inputBuffer = new byte[1024];
+                        Stream inputStream = Console.OpenStandardInput(inputBuffer.Length);
+                        Console.SetIn(new StreamReader(inputStream, Console.InputEncoding, false, inputBuffer.Length));
+                        string strInput = Console.ReadLine();
+                        byte[] byteInput = ByteArray.parseHex(strInput);
 
-                        Console.WriteLine($"[+] Authenticate APDU recevied, signed message with lengh {signData.Length} bytes");
-
-                        pendingRequest.Close();
-                        pendingRequest = null;
-                        return GenerateLargeResponse(tlvResponse.Encode());                          
+                        return GenerateLargeResponse(byteInput);
                     }
 
 
