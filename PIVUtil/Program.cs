@@ -58,19 +58,19 @@ namespace PIVUtil
         //imports
         [DllImport("winscard.dll", EntryPoint = "SCardConnectA", CharSet = CharSet.Ansi)]
         static extern uint SCardConnect(IntPtr context, String reader, share ShareMode, protocol PreferredProtocols, out IntPtr cardHandle, out protocol ActiveProtocol);
-        
+
         [DllImport("winscard.dll")]
         static extern uint SCardDisconnect(IntPtr hCard, disposition Disposition);
-        
+
         [DllImport("winscard.dll")]
         static extern uint SCardGetAttrib(IntPtr hCard, uint AttrId, byte[] Attrib, ref int AttribLen);
-        
+
         [DllImport("winscard.dll", EntryPoint = "SCardListReadersA", CharSet = CharSet.Ansi)]
         static extern uint SCardListReaders(IntPtr hContext, byte[] mszGroups, byte[] mszReaders, ref UInt32 pcchReaders);
-        
+
         [DllImport("winscard.dll")]
         static extern uint SCardEstablishContext(scope Scope, IntPtr reserved1, IntPtr reserved2, out IntPtr context);
-        
+
         [DllImport("winscard.dll")]
         static extern uint SCardIsValidContext(IntPtr context);
         [DllImport("WinScard.dll")]
@@ -115,7 +115,10 @@ namespace PIVUtil
         {
             uint ris = SCardConnect(context, reader, ShareMode, PreferredProtocols, out cardHandle, out activeProtocol);
             if (ris != 0)
+            {
+                Console.WriteLine(String.Format("[-] Connect failed: {0}", ris));
                 return false;
+            }
             return true;
         }
 
@@ -142,7 +145,7 @@ namespace PIVUtil
         public static string hexDump(byte[] input)
         {
             StringBuilder sbBytes = new StringBuilder(input.Length * 2);
-            for(int i = 0; i < input.Length; i++)
+            for (int i = 0; i < input.Length; i++)
             {
                 sbBytes.AppendFormat("{0:X2}", input[i]);
             }
@@ -170,7 +173,7 @@ namespace PIVUtil
             byte[] buff_recv = new byte[1024];
             int recv_len = 1024;
             var ret = SCardTransmit(cardHandle, ref io_send, buff_send, buff_send.Length, ref io_recv, buff_recv, ref recv_len);
-            
+
             //Console.WriteLine(String.Format("SCardTransmit: {0}, recv_len: {1}", ret, recv_len));
             //if (recv_len > 1)
             //{
@@ -187,6 +190,7 @@ namespace PIVUtil
             byte[] status = new byte[] { };
 
             //reset
+            //recv = send(new byte[] { 0x00, 0xa4, 0x04, 0x00, 0x05, 0xa0, 0x00, 0x00, 0x03, 0x08 });
             recv = send(new byte[] { 0x00, 0xA4, 0x04, 0x00, 0x09, 0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00 });
 
             //https://docs.yubico.com/yesdk/users-manual/application-piv/piv-objects.html
@@ -201,7 +205,11 @@ namespace PIVUtil
             //Console.WriteLine(hexDump(status));
             //Console.WriteLine(hexDump(recv));
 
-            if(!status.SequenceEqual(new byte[] { 0x2A, 0x86 }))
+            if (status.SequenceEqual(new byte[] { 0x90, 0x00 }))
+            {
+                return recv;
+            }
+            if (recv.All(singleByte => singleByte == 0))
             {
                 return recv2;
             }
@@ -237,147 +245,160 @@ namespace PIVUtil
 
         static void Main(string[] args)
         {
-            if(args.Length < 1)
+            if (args.Length < 1)
             {
                 PrintUsage();
                 return;
             }
-            if(args.Length == 1 && args[0] == "list")
+
+            uint ret = SCardEstablishContext(scope.SCARD_SCOPE_SYSTEM, IntPtr.Zero, IntPtr.Zero, out context);
+            if (ret != NO_ERROR)
             {
-                Console.WriteLine();
-                foreach (string r in ListReaders())
-                {
-                    Console.WriteLine(String.Format("[*] {0}",r));
-                }
-                return;
-            }
-            if(args.Length < 1)
-            {
-                PrintUsage();
+                Console.WriteLine(String.Format("[-] SCardEstablishContext failed: {0}", ret));
                 return;
             }
 
             string reader = args[0];
-            uint ret;
-            ret = SCardEstablishContext(scope.SCARD_SCOPE_SYSTEM, IntPtr.Zero, IntPtr.Zero, out context);
-
-            if(ret == NO_ERROR)
+            string[] readers = ListReaders();
+            
+            if (args.Length == 1 && args[0] == "list")
             {
-                string[] readers = ListReaders();
-                if (!readers.Contains(reader))
+                foreach (string r in readers)
                 {
-                    Console.WriteLine(String.Format("\n [-] Driver not found!"));
-                    return;
+                    Console.WriteLine(String.Format("[*] {0}", r));
                 }
-                Console.WriteLine(String.Format("\n [*]Using smartcard: {0}", reader));
-
-                if (Connect(reader, share.SCARD_SHARE_SHARED, protocol.SCARD_PROTOCOL_T0orT1))
-                {
-                    if (args.Length > 2)
-                    {
-                        byte[] recv = new byte[] { };
-                        byte[] recv2 = new byte[] { };
-                        byte[] status = new byte[] { };
-
-                        //reset
-                        //send(new byte[] { 0x00, 0xa4, 0x04, 0x00, 0x05, 0xa0, 0x00, 0x00, 0x03, 0x08 });
-                        send(new byte[] { 0x00, 0xA4, 0x04, 0x00, 0x09, 0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00 });
-                        //Console.WriteLine(hexDump(recv));
-
-                        //Verify PIN
-                        string pin = args[1];
-                        Console.WriteLine(String.Format("[*] Using pin: {0}", pin));
-                        byte[] pin_bytes = Encoding.ASCII.GetBytes(pin);
-                        while (pin_bytes.Length < 8)
-                        {
-                            pin_bytes = pin_bytes.Concat(new byte[] { 0xff }).ToArray();
-                        }
-                        byte[] pin_packet = new byte[] { 0x00, 0x20, 0x00, 0x80, 0x08 };
-                        pin_packet = pin_packet.Concat(pin_bytes).ToArray();
-                        recv = send(pin_packet);
-                        if (!recv.SequenceEqual(new byte[] { 0x90, 0x00 }))
-                        {
-                            Console.WriteLine(String.Format("[-] Wrong PIN! {0}", hexDump(recv)));
-                            return;
-                        }
-                        //Console.WriteLine(hexDump(recv));
-
-                        //Send data to sign
-                        for (int i = 2; i < args.Length; i++)
-                        {
-                            recv = send(StringToByteArray(args[i]));
-                            //Console.WriteLine(hexDump(recv));
-                        }
-                        recv = recv.Take(recv.Length - 2).ToArray();
-                        status = recv.Skip(recv.Length - 2).ToArray();
-                        //Console.WriteLine(hexDump(recv));
-
-                        //get large response
-                        while (true)
-                        {
-                            recv2 = send(new byte[] { 0x00, 0xC0, 0x00, 0x00 });
-                            recv = recv.Concat(recv2.Take(recv2.Length - 2).ToArray()).ToArray();
-                            status = recv2.Skip(recv2.Length - 2).ToArray();
-                            //Console.WriteLine(hexDump(status));
-                            //Console.WriteLine(hexDump(recv2));
-                            if (status.SequenceEqual(new byte[] { 0x90, 00 }))
-                            {
-                                break;
-                            }
-                            if(recv2.All(singleByte => singleByte == 0))
-                            {
-                                break;
-                            }
-                        }
-
-                        Console.WriteLine(hexDump(recv));
-
-
-                    }
-                    else
-                    {
-                        //Auth (cert) 9A
-                        byte[] _9A = downloadData(new byte[] { 0x00, 0xcb, 0x3f, 0xff, 0x05, 0x5c, 0x03, 0x5f, 0xc1, 0x05, 0x00 });
-                        if(_9A.Length > 0)
-                        {
-                            _9A = _9A.Skip(8).ToArray();
-                            _9A = _9A.Take(_9A.Length - 5).ToArray();
-                            Console.WriteLine(String.Format("[*] Public Auth (cert) Slot 9A:"));
-                            Console.WriteLine(hexDump(_9A));
-                        }
-
-                        //Signature (cert) 9C
-                        byte[] _9C = downloadData(new byte[] { 0x00, 0xcb, 0x3f, 0xff, 0x05, 0x5c, 0x03, 0x5f, 0xc1, 0x0A, 0x00 });
-                        if (_9C.Length > 0)
-                        {
-                            _9C = _9C.Skip(8).ToArray();
-                            _9C = _9C.Take(_9C.Length - 5).ToArray();
-                            Console.WriteLine(String.Format("[*] Public Signature (cert) Slot 9C:"));
-                            Console.WriteLine(hexDump(_9C));
-                        }
-
-                        //Key Mgmt (cert) 9D
-                        byte[] _9D = downloadData(new byte[] { 0x00, 0xcb, 0x3f, 0xff, 0x05, 0x5c, 0x03, 0x5f, 0xc1, 0x0B, 0x00 });
-                        if (_9D.Length > 0)
-                        {
-                            _9D = _9D.Skip(8).ToArray();
-                            _9D = _9D.Take(_9D.Length - 5).ToArray();
-                            Console.WriteLine(String.Format("[*] Public Key Mgmt (cert) Slot 9D:"));
-                            Console.WriteLine(hexDump(_9D));
-                        }
-
-                        //Card Auth (cert) 9E
-                        byte[] _9E = downloadData(new byte[] { 0x00, 0xcb, 0x3f, 0xff, 0x05, 0x5c, 0x03, 0x5f, 0xc1, 0x01, 0x00 });
-                        if (_9E.Length > 0)
-                        {
-                            _9E = _9E.Skip(8).ToArray();
-                            _9E = _9E.Take(_9E.Length - 5).ToArray();
-                            Console.WriteLine(String.Format("[*] Public Card Auth (cert) Slot 9E:"));
-                            Console.WriteLine(hexDump(_9E));
-                        }
-                    }
-                }
+                return;
             }
+            
+            if (!readers.Contains(reader))
+            {
+                Console.WriteLine(String.Format("[-] Driver not found!"));
+                return;
+            }
+            
+            Console.WriteLine(String.Format("[*] Using smartcard: {0}", reader));
+
+            if (Connect(reader, share.SCARD_SHARE_SHARED, protocol.SCARD_PROTOCOL_T0orT1))
+            {
+                if (args.Length > 2)
+                {
+                    byte[] recv = new byte[] { };
+                    byte[] recv2 = new byte[] { };
+                    byte[] status = new byte[] { };
+
+                    //reset
+                    //send(new byte[] { 0x00, 0xa4, 0x04, 0x00, 0x05, 0xa0, 0x00, 0x00, 0x03, 0x08 });
+                    send(new byte[] { 0x00, 0xA4, 0x04, 0x00, 0x09, 0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00 });
+                    //Console.WriteLine(hexDump(recv));
+
+                    //Verify PIN
+                    string pin = args[1];
+                    Console.WriteLine(String.Format("[*] Using pin: {0}", pin));
+                    byte[] pin_bytes = Encoding.ASCII.GetBytes(pin);
+                    while (pin_bytes.Length < 8)
+                    {
+                        pin_bytes = pin_bytes.Concat(new byte[] { 0xff }).ToArray();
+                    }
+                    byte[] pin_packet = new byte[] { 0x00, 0x20, 0x00, 0x80, 0x08 };
+                    pin_packet = pin_packet.Concat(pin_bytes).ToArray();
+                    recv = send(pin_packet);
+                    if (!recv.SequenceEqual(new byte[] { 0x90, 0x00 }))
+                    {
+                        Console.WriteLine(String.Format("[-] Wrong PIN! {0}", hexDump(recv)));
+                        return;
+                    }
+                    //Console.WriteLine(hexDump(recv));
+
+                    //Send data to sign
+                    for (int i = 2; i < args.Length; i++)
+                    {
+                        recv = send(StringToByteArray(args[i]));
+                        //Console.WriteLine(hexDump(recv));
+                    }
+                    recv = recv.Take(recv.Length - 2).ToArray();
+                    status = recv.Skip(recv.Length - 2).ToArray();
+                    //Console.WriteLine(hexDump(status));
+                    //Console.WriteLine(hexDump(recv));
+
+                    if (status.SequenceEqual(new byte[] { 0x90, 0x00 }))
+                    {
+                        Console.WriteLine(hexDump(recv));
+                        return;
+                    }
+                    if (recv.All(singleByte => singleByte == 0))
+                    {
+                        Console.WriteLine(hexDump(recv));
+                        return;
+                    }
+
+                    //get large response
+                    while (true)
+                    {
+                        recv2 = send(new byte[] { 0x00, 0xC0, 0x00, 0x00 });
+                        recv = recv.Concat(recv2.Take(recv2.Length - 2).ToArray()).ToArray();
+                        status = recv2.Skip(recv2.Length - 2).ToArray();
+                        //Console.WriteLine(hexDump(status));
+                        //Console.WriteLine(hexDump(recv2));
+                        if (status.SequenceEqual(new byte[] { 0x90, 00 }))
+                        {
+                            break;
+                        }
+                        if (recv2.All(singleByte => singleByte == 0))
+                        {
+                            break;
+                        }
+                    }
+
+                    Console.WriteLine(hexDump(recv));
+
+
+                }
+                else
+                {
+                    //https://developers.yubico.com/yubico-piv-tool/Actions/read_write_objects.html
+                    Console.WriteLine("[*] Enumerating certificates");
+
+                    //Auth (cert) 9A
+                    byte[] _9A = downloadData(new byte[] { 0x00, 0xcb, 0x3f, 0xff, 0x05, 0x5c, 0x03, 0x5f, 0xc1, 0x05 });
+                    if (_9A.Length > 0)
+                    {
+                        _9A = _9A.Skip(8).ToArray();
+                        _9A = _9A.Take(_9A.Length - 5).ToArray();
+                        Console.WriteLine(String.Format("[*] Public Auth (cert) Slot 9A:"));
+                        Console.WriteLine(hexDump(_9A));
+                    }
+
+                    //Signature (cert) 9C
+                    byte[] _9C = downloadData(new byte[] { 0x00, 0xcb, 0x3f, 0xff, 0x05, 0x5c, 0x03, 0x5f, 0xc1, 0x0A });
+                    if (_9C.Length > 0)
+                    {
+                        _9C = _9C.Skip(8).ToArray();
+                        _9C = _9C.Take(_9C.Length - 5).ToArray();
+                        Console.WriteLine(String.Format("[*] Public Signature (cert) Slot 9C:"));
+                        Console.WriteLine(hexDump(_9C));
+                    }
+
+                    //Key Mgmt (cert) 9D
+                    byte[] _9D = downloadData(new byte[] { 0x00, 0xcb, 0x3f, 0xff, 0x05, 0x5c, 0x03, 0x5f, 0xc1, 0x0B });
+                    if (_9D.Length > 0)
+                    {
+                        _9D = _9D.Skip(8).ToArray();
+                        _9D = _9D.Take(_9D.Length - 5).ToArray();
+                        Console.WriteLine(String.Format("[*] Public Key Mgmt (cert) Slot 9D:"));
+                        Console.WriteLine(hexDump(_9D));
+                    }
+
+                    //Card Auth (cert) 9E
+                    byte[] _9E = downloadData(new byte[] { 0x00, 0xcb, 0x3f, 0xff, 0x05, 0x5c, 0x03, 0x5f, 0xc1, 0x01 });
+                    if (_9E.Length > 0)
+                    {
+                        _9E = _9E.Skip(8).ToArray();
+                        _9E = _9E.Take(_9E.Length - 5).ToArray();
+                        Console.WriteLine(String.Format("[*] Public Card Auth (cert) Slot 9E:"));
+                        Console.WriteLine(hexDump(_9E));
+                    }
+                }
+            }            
         }
     }
 }
